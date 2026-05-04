@@ -175,14 +175,14 @@ async function handleOrder(
         state: { step: "recipe_shown", recipe_key: recipeKey, servings },
       };
     }
-    const addressId = addresses[0].address_id;
+    const addressId = addresses[0].addressId;
 
     // Search all ingredients in parallel
     const scaled = scaleIngredients(recipe.ingredients, servings);
     const matches = await matchIngredients(token, scaled, addressId);
 
     // Split found vs not found
-    const outOfStock = matches.filter((m) => !m.product).map((m) => m.ingredient_name);
+    const outOfStock = matches.filter((m) => !m.variant).map((m) => m.ingredient_name);
     const cartItems = buildCartItems(matches);
 
     if (cartItems.length === 0) {
@@ -194,7 +194,7 @@ async function handleOrder(
     }
 
     // Build cart and fetch price
-    await updateCart(token, cartItems);
+    await updateCart(token, addressId, cartItems);
     const cart = await getCart(token);
     const summary = formatCartSummary(cart, outOfStock);
 
@@ -246,14 +246,14 @@ async function handleConfirm(
 
   try {
     const order = await checkout(token, state.address_id);
-    const eta = order.estimated_delivery_minutes
-      ? ` Arriving in ~${order.estimated_delivery_minutes} mins.`
+    const eta = order.estimatedDeliveryMinutes
+      ? ` Arriving in ~${order.estimatedDeliveryMinutes} mins.`
       : "";
 
     return {
-      text: `Order placed for *${recipe.display_name}*!\n\nOrder ID: \`${order.order_id}\`${eta}`,
+      text: `Order placed for *${recipe.display_name}*!\n\nOrder ID: \`${order.orderId}\`${eta}`,
       action_rows: [],
-      state: { step: "ordered", recipe_key: recipeKey, servings, order_id: order.order_id },
+      state: { step: "ordered", recipe_key: recipeKey, servings, order_id: order.orderId },
     };
   } catch (err) {
     if (err instanceof SwiggyAuthError) {

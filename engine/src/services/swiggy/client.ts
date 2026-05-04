@@ -2,21 +2,25 @@
  * JSON-RPC MCP client for Swiggy Instamart.
  * Endpoint: POST https://mcp.swiggy.com/im
  *
- * Retry strategy from docs: exponential backoff, start 500ms, double, cap at 8s, max 5 retries.
+ * Response envelope: { success: boolean, data: T, message?: string }
+ * Retry: exponential backoff 500ms → 8s, max 5 retries.
  */
 
 const IM_ENDPOINT = "https://mcp.swiggy.com/im";
 
-export interface MCPError {
-  success: false;
-  error: { message: string; reportLink?: string };
+interface SwiggyEnvelope<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+  error?: { message: string };
 }
+
+export class SwiggyAuthError extends Error { readonly type = "auth" as const; }
+export class SwiggyAPIError extends Error { readonly type = "api" as const; }
 
 let _requestId = 0;
 
-async function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function callTool<T>(
   token: string,
@@ -42,7 +46,8 @@ export async function callTool<T>(
       body,
     });
 
-    // Retryable server errors
+    if (res.status === 401) throw new SwiggyAuthError("Token expired — re-authenticate");
+
     if (res.status === 502 || res.status === 503 || res.status === 504) {
       if (attempt < 5) {
         await sleep(delay + Math.random() * 200);
@@ -51,28 +56,23 @@ export async function callTool<T>(
       }
     }
 
-    if (res.status === 401) {
-      throw new SwiggyAuthError("Token expired or invalid — re-authenticate");
-    }
+    const json = await res.json() as {
+      result?: { content?: Array<{ text: string }> };
+      error?: unknown;
+    };
 
-    const json = await res.json() as { result?: { content?: Array<{ text: string }> }; error?: unknown };
+    if (json.error) throw new SwiggyAPIError(`MCP error on ${toolName}: ${JSON.stringify(json.error)}`);
 
-    if (json.error) throw new SwiggyAPIError(`MCP error: ${JSON.stringify(json.error)}`);
-
-    // MCP wraps result in content[0].text as JSON string
     const text = json.result?.content?.[0]?.text;
     if (!text) throw new SwiggyAPIError(`Empty response from ${toolName}`);
 
-    const parsed = JSON.parse(text) as T & { success?: boolean; error?: { message: string } };
-    if ((parsed as MCPError).success === false) {
-      throw new SwiggyAPIError((parsed as MCPError).error.message);
+    const envelope = JSON.parse(text) as SwiggyEnvelope<T>;
+    if (!envelope.success) {
+      throw new SwiggyAPIError(envelope.error?.message ?? `${toolName} returned success=false`);
     }
 
-    return parsed;
+    return envelope.data;
   }
 
   throw new SwiggyAPIError(`${toolName} failed after 5 retries`);
 }
-
-export class SwiggyAuthError extends Error { readonly type = "auth" as const; }
-export class SwiggyAPIError extends Error { readonly type = "api" as const; }

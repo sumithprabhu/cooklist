@@ -1,9 +1,8 @@
 /**
- * Instamart tool wrappers.
- * All functions take a Bearer token + typed args, return typed results.
+ * Instamart tool wrappers — parameter shapes match the MCP reference docs exactly.
+ * https://mcp.swiggy.com/builders/docs/reference/instamart/
  *
- * Tool order for a full order flow:
- *   getAddresses → searchProducts (per ingredient) → updateCart → getCart → checkout
+ * Order flow: get_addresses → search_products → update_cart → get_cart → checkout
  */
 
 import { callTool } from "./client.js";
@@ -11,112 +10,176 @@ import { callTool } from "./client.js";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface Address {
-  address_id: string;
+  addressId: string;
   label?: string;
   formatted: string;
 }
 
-export interface Product {
-  product_id: string;
-  store_id: string;
+export interface ProductVariant {
+  spinId: string;     // used for cart operations
   name: string;
-  price: number;       // in rupees
-  unit: string;        // e.g. "500g", "1L", "1 piece"
+  price: number;
+  unit: string;
   available: boolean;
-  image_url?: string;
+}
+
+export interface Product {
+  name: string;
+  variants: ProductVariant[];
 }
 
 export interface CartItem {
-  product_id: string;
-  store_id: string;
+  spinId: string;
   quantity: number;
 }
 
 export interface CartBill {
-  item_total: number;
-  delivery_fee: number;
-  platform_fee: number;
+  itemTotal: number;
+  deliveryFee: number;
+  platformFee: number;
   total: number;
 }
 
+export interface PaymentMethod {
+  type: string;
+  label: string;
+}
+
 export interface Cart {
-  items: Array<{ product_id: string; name: string; quantity: number; price: number }>;
+  items: Array<{ spinId: string; name: string; quantity: number; price: number }>;
   bill: CartBill;
+  availablePaymentMethods: PaymentMethod[];
 }
 
 export interface Order {
-  order_id: string;
+  orderId: string;
   status: string;
-  estimated_delivery_minutes?: number;
+  estimatedDeliveryMinutes?: number;
 }
 
-// ── Tool wrappers ─────────────────────────────────────────────────────────────
+export interface OrderSummary {
+  orderId: string;
+  status: string;
+  items: Array<{ name: string; quantity: number }>;
+}
+
+export interface TrackingInfo {
+  orderId: string;
+  status: string;
+  eta: string;
+  deliveryPartnerLocation?: { lat: number; lng: number };
+}
+
+export const CART_LIMIT = 1000;
+
+// ── Discover ──────────────────────────────────────────────────────────────────
 
 export async function getAddresses(token: string): Promise<Address[]> {
-  const res = await callTool<{ addresses: Address[] }>(token, "get_addresses", {});
-  return res.addresses ?? [];
+  const data = await callTool<{ addresses: Address[] }>(token, "get_addresses", {});
+  return data.addresses ?? [];
 }
 
 export async function searchProducts(
   token: string,
+  addressId: string,
   query: string,
-  addressId: string
+  offset = 0
 ): Promise<Product[]> {
-  const res = await callTool<{ products: Product[] }>(token, "search_products", {
+  const data = await callTool<{ products: Product[] }>(token, "search_products", {
+    addressId,
     query,
-    address_id: addressId,
+    offset,
   });
-  return (res.products ?? []).filter((p) => p.available);
+  return data.products ?? [];
 }
 
-export async function updateCart(token: string, items: CartItem[]): Promise<void> {
-  await callTool(token, "update_cart", { items });
+export async function getGoToItems(token: string, addressId: string): Promise<Product[]> {
+  const data = await callTool<{ products: Product[] }>(token, "your_go_to_items", { addressId });
+  return data.products ?? [];
+}
+
+// ── Cart ──────────────────────────────────────────────────────────────────────
+
+export async function clearCart(token: string): Promise<void> {
+  await callTool(token, "clear_cart", {});
+}
+
+export async function updateCart(
+  token: string,
+  selectedAddressId: string,
+  items: CartItem[]
+): Promise<void> {
+  await callTool(token, "update_cart", { selectedAddressId, items });
 }
 
 export async function getCart(token: string): Promise<Cart> {
   return callTool<Cart>(token, "get_cart", {});
 }
 
-export async function checkout(token: string, addressId: string): Promise<Order> {
-  return callTool<Order>(token, "checkout", { address_id: addressId });
+// ── Order ─────────────────────────────────────────────────────────────────────
+
+export async function checkout(
+  token: string,
+  addressId: string,
+  paymentMethod?: string
+): Promise<Order> {
+  const args: Record<string, unknown> = { addressId };
+  if (paymentMethod) args.paymentMethod = paymentMethod;
+  return callTool<Order>(token, "checkout", args);
 }
 
-// ── Ingredient → product matching ─────────────────────────────────────────────
+// ── Track ─────────────────────────────────────────────────────────────────────
+
+export async function getOrders(
+  token: string,
+  opts: { count?: number; activeOnly?: boolean } = {}
+): Promise<OrderSummary[]> {
+  const data = await callTool<{ orders: OrderSummary[] }>(token, "get_orders", {
+    count: opts.count ?? 10,
+    orderType: "INSTAMART",
+    activeOnly: opts.activeOnly ?? false,
+  });
+  return data.orders ?? [];
+}
+
+export async function getOrderDetails(token: string, orderId: string): Promise<OrderSummary> {
+  return callTool<OrderSummary>(token, "get_order_details", { orderId });
+}
+
+export async function trackOrder(
+  token: string,
+  orderId: string,
+  lat: number,
+  lng: number
+): Promise<TrackingInfo> {
+  return callTool<TrackingInfo>(token, "track_order", { orderId, lat, lng });
+}
+
+// ── Ingredient matching helpers ───────────────────────────────────────────────
 
 export interface IngredientMatch {
   ingredient_name: string;
-  product: Product | null;   // null = not found / out of stock
+  variant: ProductVariant | null;
 }
 
-/**
- * For each ingredient, search Instamart and pick the best match.
- * Returns one match per ingredient (first available result).
- */
 export async function matchIngredients(
   token: string,
   ingredients: Array<{ name: string }>,
   addressId: string
 ): Promise<IngredientMatch[]> {
-  const results = await Promise.all(
+  return Promise.all(
     ingredients.map(async (ing) => {
-      const products = await searchProducts(token, ing.name, addressId);
-      return {
-        ingredient_name: ing.name,
-        product: products[0] ?? null,
-      };
+      const products = await searchProducts(token, addressId, ing.name);
+      const variant = products.flatMap((p) => p.variants).find((v) => v.available) ?? null;
+      return { ingredient_name: ing.name, variant };
     })
   );
-  return results;
 }
 
 export function buildCartItems(matches: IngredientMatch[]): CartItem[] {
   return matches
-    .filter((m): m is IngredientMatch & { product: Product } => m.product !== null)
-    .map((m) => ({
-      product_id: m.product.product_id,
-      store_id: m.product.store_id,
-      quantity: 1,
-    }));
+    .filter((m): m is IngredientMatch & { variant: ProductVariant } => m.variant !== null)
+    .map((m) => ({ spinId: m.variant.spinId, quantity: 1 }));
 }
 
 export function formatCartSummary(cart: Cart, outOfStock: string[]): string {
@@ -132,10 +195,19 @@ export function formatCartSummary(cart: Cart, outOfStock: string[]): string {
   }
 
   lines.push("");
-  lines.push(`Items total: ₹${cart.bill.item_total}`);
-  lines.push(`Delivery fee: ₹${cart.bill.delivery_fee}`);
-  if (cart.bill.platform_fee > 0) lines.push(`Platform fee: ₹${cart.bill.platform_fee}`);
+  lines.push(`Items total: ₹${cart.bill.itemTotal}`);
+  lines.push(`Delivery fee: ₹${cart.bill.deliveryFee}`);
+  if (cart.bill.platformFee > 0) lines.push(`Platform fee: ₹${cart.bill.platformFee}`);
   lines.push(`*Total: ₹${cart.bill.total}*`);
+
+  if (cart.bill.total > CART_LIMIT) {
+    lines.push(`\n_Cart exceeds ₹${CART_LIMIT} limit for chat ordering. Please use the Swiggy app._`);
+  }
+
+  if (cart.availablePaymentMethods?.length > 0) {
+    const methods = cart.availablePaymentMethods.map((m) => m.label).join(", ");
+    lines.push(`\nPay via: ${methods}`);
+  }
 
   return lines.join("\n");
 }

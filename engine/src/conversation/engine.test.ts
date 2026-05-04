@@ -139,15 +139,16 @@ describe("action: order — no Swiggy token", () => {
 describe("action: order — authenticated", () => {
   beforeEach(() => {
     mockGetToken.mockReturnValue("valid-token");
-    mockGetAddresses.mockResolvedValue([{ address_id: "addr1", formatted: "123 Main St" }]);
+    mockGetAddresses.mockResolvedValue([{ addressId: "addr1", formatted: "123 Main St" }]);
     mockMatchIngredients.mockResolvedValue([
-      { ingredient_name: "Toor Dal", product: { product_id: "p1", store_id: "s1", name: "Toor Dal", price: 60, unit: "500g", available: true } },
+      { ingredient_name: "Toor Dal", variant: { spinId: "spin1", name: "Toor Dal 500g", price: 60, unit: "500g", available: true } },
     ]);
-    mockBuildCartItems.mockReturnValue([{ product_id: "p1", store_id: "s1", quantity: 1 }]);
+    mockBuildCartItems.mockReturnValue([{ spinId: "spin1", quantity: 1 }]);
     mockUpdateCart.mockResolvedValue(undefined);
     mockGetCart.mockResolvedValue({
-      items: [{ product_id: "p1", name: "Toor Dal", quantity: 1, price: 60 }],
-      bill: { item_total: 60, delivery_fee: 25, platform_fee: 5, total: 90 },
+      items: [{ spinId: "spin1", name: "Toor Dal", quantity: 1, price: 60 }],
+      bill: { itemTotal: 60, deliveryFee: 25, platformFee: 5, total: 90 },
+      availablePaymentMethods: [{ type: "COD", label: "Cash on Delivery" }],
     });
   });
 
@@ -172,7 +173,7 @@ describe("action: order — authenticated", () => {
 describe("action: confirm", () => {
   it("calls checkout and transitions to ordered state", async () => {
     mockGetToken.mockReturnValue("valid-token");
-    mockCheckout.mockResolvedValue({ order_id: "ORD-99", status: "confirmed", estimated_delivery_minutes: 15 });
+    mockCheckout.mockResolvedValue({ orderId: "ORD-99", status: "confirmed", estimatedDeliveryMinutes: 15 });
 
     const preview: ConversationState = { step: "order_preview", recipe_key: "upma", servings: 2, address_id: "addr1", cart_total: 90 };
     const out = await process(preview, { session_id: "s1", platform: "telegram", user_id: "u1", action_id: "confirm|upma|2" });
